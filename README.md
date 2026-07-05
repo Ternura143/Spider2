@@ -6,6 +6,8 @@
   <a href="https://docs.google.com/document/d/1sCobAqJZcko-Vl3biOycwvCIR7kTwBPrhsgVfvaX1Fg/edit?usp=sharing">Submission Guidance</a>
 </p>
 
+> Runnable62 Spider2-DBT baseline branch note: see [docs/spider2_dbt_baseline_quickstart.md](docs/spider2_dbt_baseline_quickstart.md) for the OpenAI-compatible, Gemini, and GLM/Z.ai baseline commands used by our group.
+
 ## 📰 News 
 
 - **2025-11-06**: We apologize for the recent Snowflake login and credential issues caused by Snowflake’s password & MFA policy upgrade. Both **Web UI login** and **Python credential access** behaviors have changed.  
