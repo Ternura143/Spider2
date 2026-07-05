@@ -34,9 +34,10 @@ def call_llm(payload):
         for i in range(3):
             try:
                 response = requests.post(
-                            "https://api.openai.com/v1/chat/completions",
+                            f"{os.environ.get('OPENAI_BASE_URL', 'https://api.openai.com/v1').rstrip('/')}/chat/completions",
                             headers=headers,
-                            json=payload
+                            json=payload,
+                            timeout=int(os.environ.get("OPENAI_REQUEST_TIMEOUT", "300"))
                         )
                 output_message = response.json()['choices'][0]['message']['content']
                 # logger.info(f"Input: \n{payload['messages']}\nOutput:{response}")
@@ -249,6 +250,123 @@ def call_llm(payload):
                 logger.error("Retrying ...") 
 
         return False, code_value
+    elif model.startswith("gemini-3") or model.startswith("gemini-2"):
+        api_key = os.environ.get("GEMINI_API_KEY")
+        if not api_key:
+            raise EnvironmentError("Set GEMINI_API_KEY before using a Gemini model")
+
+        max_tokens = payload["max_tokens"]
+        top_p = payload["top_p"]
+        temperature = payload["temperature"]
+        system_parts = []
+        contents = []
+        for message in payload["messages"]:
+            role = message.get("role", "user")
+            parts = message.get("content", "")
+            if isinstance(parts, list):
+                text_parts = []
+                for part in parts:
+                    if part.get("type") == "text":
+                        text_parts.append(part.get("text", ""))
+                content = "\n".join(text_parts)
+            else:
+                content = str(parts)
+            if not content.strip():
+                continue
+            if role == "system":
+                system_parts.append(content)
+                continue
+            gemini_role = "model" if role == "assistant" else "user"
+            contents.append({"role": gemini_role, "parts": [{"text": content}]})
+
+        if system_parts:
+            system_text = "\n\n".join(system_parts)
+            if contents and contents[0]["role"] == "user":
+                contents[0]["parts"].insert(0, {"text": system_text})
+            else:
+                contents.insert(0, {"role": "user", "parts": [{"text": system_text}]})
+
+        request_payload = {
+            "contents": contents,
+            "generationConfig": {
+                "temperature": temperature,
+                "topP": top_p,
+                "maxOutputTokens": max_tokens,
+            },
+        }
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        headers = {"Content-Type": "application/json", "X-goog-api-key": api_key}
+        code_value = "unknown_error"
+        for i in range(3):
+            try:
+                response = requests.post(url, headers=headers, json=request_payload, timeout=180)
+                logger.info("Gemini direct response_code %s", response.status_code)
+                if response.status_code == 200:
+                    data = response.json()
+                    parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+                    output = "".join(part.get("text", "") for part in parts)
+                    if output:
+                        return True, output
+                    code_value = "empty_response"
+                else:
+                    try:
+                        err = response.json().get("error", {})
+                        code_value = err.get("status") or err.get("code") or response.status_code
+                    except Exception:
+                        code_value = response.status_code
+                    if str(code_value) in {"context_length_exceeded", "INVALID_ARGUMENT"}:
+                        return False, str(code_value)
+                logger.error("Retrying ...")
+                time.sleep(10 * (2 ** (i + 1)))
+            except Exception as e:
+                logger.error("Failed to call Gemini direct LLM: " + str(e))
+                code_value = "unknown_error"
+                time.sleep(10 * (2 ** (i + 1)))
+        return False, str(code_value)
+
+    elif model.startswith("glm") or model.startswith("GLM"):
+        from openai import OpenAI
+
+        api_key = os.environ.get("GLM_API_KEY") or os.environ.get("ZAI_API_KEY")
+        base_url = os.environ.get("GLM_BASE_URL")
+        if not api_key:
+            raise EnvironmentError("Set GLM_API_KEY or ZAI_API_KEY before using a glm* model")
+        if not base_url:
+            raise EnvironmentError("Set GLM_BASE_URL before using a glm* model")
+
+        glm_messages = []
+        for message in payload["messages"]:
+            content = message.get("content", "")
+            if isinstance(content, list):
+                content = "".join(part.get("text", "") for part in content if part.get("type") == "text")
+            glm_messages.append({"role": message["role"], "content": content})
+
+        client = OpenAI(api_key=api_key, base_url=base_url)
+        for i in range(3):
+            try:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=glm_messages,
+                    max_tokens=payload["max_tokens"],
+                    top_p=payload["top_p"],
+                    temperature=payload["temperature"],
+                    stop=stop,
+                )
+                return True, response.choices[0].message.content
+            except Exception as e:
+                logger.error("Failed to call LLM: " + str(e))
+                code_value = "unknown_error"
+                if hasattr(e, "response") and e.response is not None:
+                    try:
+                        code_value = e.response.json().get("error", {}).get("code", code_value)
+                    except Exception:
+                        pass
+                    if code_value == "context_length_exceeded":
+                        return False, code_value
+                logger.error("Retrying ...")
+                time.sleep(10 * (2 ** (i + 1)))
+        return False, code_value
+
     elif model.startswith("deepseek"):
         
         messages = payload["messages"]
